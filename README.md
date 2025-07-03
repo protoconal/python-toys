@@ -4,6 +4,7 @@ A collection of python-thingumajigs
 # Music Metadata Symlinker
 
 A Python script for organizing `.flac` music files into a clean, structured folder hierarchy using symlinks based on metadata (Artist/Album). Tracks are hashed and indexed in a local SQLite database to detect changes and avoid redundant operations.
+Written for Jellyfin management.
 
 Generated with ChatGPT
 
