@@ -4,6 +4,8 @@ A Python script for organizing `.flac` music files into a clean, structured fold
 
 Generated with ChatGPT
 
+Written with the intent to convert one folder with every-single-fuckin-song-in-it into a folder structure applicable for Jellyfin.
+
 ---
 
 ## 🚀 Features
