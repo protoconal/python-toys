@@ -405,7 +405,7 @@ def _create_symlink(track: Track, target_dir: Path, symlink_path: Path):
 
 def remove_symlink(track: Track, baseDir: str, dry_run: bool) -> bool:
     try:
-        symlink_path = Path(baseDir) / track.artist_album / track.album / track.filepath.name
+        symlink_path = Path(track.symlink_path)
         if symlink_path.is_symlink():
             if not dry_run:
                 _remove_symlink(symlink_path)
