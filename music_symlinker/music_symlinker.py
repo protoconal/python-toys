@@ -139,7 +139,7 @@ def chunked(iterable, size):
 
 
 # https://stackoverflow.com/a/46801075
-def sanitize_for_path(s: str, sanitizer_length: int):
+def sanitize_for_path(s: str, sanitizer_length: int, disable_length_check: bool = False, disable_length_guard: bool = False):
     # https://stackoverflow.com/q/1033424
     # Remove illegal Windows Characters
     s = "".join(_ for _ in s if _ not in r'\/:*?"<>|')
@@ -149,10 +149,10 @@ def sanitize_for_path(s: str, sanitizer_length: int):
     s = s.lstrip(" ")
     s = s.rstrip(" ")
 
-    if len(s) > sanitizer_length:
+    if not disable_length_check and len(s) > sanitizer_length:
         s = s[:sanitizer_length]
         # Absolute Limit...
-        if len(s) > 250:
+        if not disable_length_guard and len(s) > 250:
             s = s[:250]
         logger.warning(f"Massive String being cut down: {s[:50]}...")
     return s
@@ -473,23 +473,46 @@ def read_input_directory(path: str, safe_filename: bool) -> List[Track]:
     logger.debug(f"sys.sizeof(tracks): {sys.getsizeof(tracks) / 1e+6} megabytes")
     return tracks
 
+def clean_symlinks_and_folders(base_symlink_dir: str, dry_run: bool):
+    logger.info("Cleaning: Removing broken symlinks and empty folders...")
+    removed_symlinks, removed_folders = remove_empty_folders_and_broken_symlinks(Path(base_symlink_dir), dry_run=dry_run)
+    logger.info(f"Removed {removed_symlinks} broken symlinks.")
+    logger.info(f"Removed {removed_folders} empty folders.")
 
 def main(input_dir: str, base_symlink_dir: str, db_path: str, batch_size: int, safe_filename: bool, dry_run: bool,
-         sanitizer_length: int):
+         sanitizer_length: int, db_only: bool, clean_only: bool):
     start_time = time.time()
     logger.info(f"{datetime.today().strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info("Starting music metadata symlink manager...")
+
+    # Only Clean...
+    if clean_only:
+        logger.info("Clean-only mode enabled.")
+        clean_symlinks_and_folders(base_symlink_dir, dry_run=dry_run)
+        elapsed = time.time() - start_time
+        logger.info(f"Cleaning completed in {elapsed:.2f} seconds.")
+        return
+
     db = establish_db_connection(db_path)
     all_tracks = read_input_directory(input_dir, safe_filename=safe_filename)
 
-    logger.info("Initialization - Cleaning up any previous empty folders and broken symlinks.")
-    removed_counts = remove_empty_folders_and_broken_symlinks(Path(base_symlink_dir), dry_run=dry_run)
-    logger.info(f"Removed {removed_counts[0]} broken symlinks.")
-    logger.info(f"Removed {removed_counts[1]} folders.")
+    # Only Update Database...
+    if db_only:
+        logger.info("Database-only mode enabled. Skipping symlink management.")
+        for batch in chunked(all_tracks, batch_size):
+            update_tracks_in_db(batch, db, dry_run=dry_run)
+        logger.info(f"Updated {len(all_tracks)} tracks in the database.")
+        elapsed = time.time() - start_time
+        logger.info(f"Finished in {elapsed:.2f} seconds.")
+        return
+
+    logger.info("Initial Clean...")
+    clean_symlinks_and_folders(base_symlink_dir, dry_run)
 
     seen_md5s = set()
     total_results = 0
     total_symlinks = 0
+    total_removed_symlinks = 0
     for batch in chunked(all_tracks, batch_size):
         start_batch = time.time()
         compare_results = bulk_compare_with_db(batch, db)
@@ -505,7 +528,8 @@ def main(input_dir: str, base_symlink_dir: str, db_path: str, batch_size: int, s
                 continue
             if result["result"]:
                 total_results += 1
-                remove_symlink(result["previousTrack"], base_symlink_dir, dry_run=dry_run)
+                if remove_symlink(result["previousTrack"], base_symlink_dir, dry_run=dry_run):
+                    total_removed_symlinks += 1
             if create_symlink(track, base_symlink_dir, dry_run=dry_run, sanitizer_length=sanitizer_length):
                 total_symlinks += 1
 
@@ -513,11 +537,10 @@ def main(input_dir: str, base_symlink_dir: str, db_path: str, batch_size: int, s
         logger.info(f"Batch processed in {time.time() - start_batch:.2f}s")
     logger.info(f"Processed {total_symlinks} tracks in total.")
     logger.info(f"Created {total_symlinks} symlinks in total.")
+    logger.info(f"Removed {total_symlinks_removed} old symlinks.")
 
-    logger.info("Resolving Errors - Cleaning up any new empty folders and broken symlinks.")
-    removed_counts = remove_empty_folders_and_broken_symlinks(Path(base_symlink_dir), dry_run=dry_run)
-    logger.info(f"Removed {removed_counts[0]} broken symlinks.")
-    logger.info(f"Removed {removed_counts[1]} folders.")
+    logger.info("Final Clean...")
+    clean_symlinks_and_folders(base_symlink_dir, dry_run)
 
     elapsed = time.time() - start_time
     logger.info(f"Finished processing in {elapsed:.2f} seconds.")
@@ -533,22 +556,32 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(
         description="Organize and symlink FLAC files by metadata. Will always regenerate symlinks.")
-    parser.add_argument("--input", default="./input_music",
+    parser.add_argument("--input", default="Z:\Music\FLACs\songs to shuffle bop to",
                         help="Input directory containing FLAC files, default = ./input_music")
-    parser.add_argument("--output", default="./linked_music",
+    parser.add_argument("--output", default="./songs to shuffle bop to (organized)",
                         help="Base directory for symlinks, default = ./linked_music")
-    parser.add_argument("--db", default="./music_metadata.db", help="Path to the SQLite database")
-    parser.add_argument("--batch-size", type=int, default=500, help="Number of tracks to process at a time")
-    parser.add_argument("--verbosity", type=int, default=1,
+    parser.add_argument("--db", default="./music_metadata.db",
+                        help="Path to the SQLite database")
+    parser.add_argument("--batch-size", type=int, default=500,
+                        help="Number of tracks to process at a time")
+    parser.add_argument("--verbosity", type=int, default=2,
                         help="Logging verbosity (0=WARNING, 1=INFO, 2=DEBUG, 3=TRACE)")
-    parser.add_argument("--log-file", default="./music_log.txt", help="Path to a log file to write output")
+    parser.add_argument("--log-file", default="./music_log.txt",
+                        help="Path to a log file to write output")
     parser.add_argument("--safe-filenames", default=True, action="store_true",
                         help="Ensure symlinks use safe, unique filenames")
-    parser.add_argument("--dry-run", default=False, action="store_true", help="Simulate actions without making changes")
+    parser.add_argument("--dry-run", default=False, action="store_true",
+                        help="Simulate actions without making changes")
     parser.add_argument("--sanitizer-length", type=int, default=50,
                         help="Define maximum string length before being shortened forcibly")
+    parser.add_argument("--db-only", action="store_true",
+                        help="Only generate/update the database, skip symlink operations")
+    parser.add_argument("--clean-only", action="store_true",
+                        help="Only remove broken symlinks and empty folders")
+
     args = parser.parse_args()
 
     setup_logging(args.verbosity, args.log_file, args.dry_run)
 
-    main(args.input, args.output, args.db, args.batch_size, args.safe_filenames, args.dry_run, args.sanitizer_length)
+    main(args.input, args.output, args.db, args.batch_size, args.safe_filenames,
+         args.dry_run, args.sanitizer_length, args.db_only, args.clean_only)
